@@ -1,0 +1,23 @@
+{
+  "name": "rennerdo30/cinch",
+  "description": "Minifies and caches enqueued CSS + JS assets on disk so the browser pulls smaller files and the edge cache hits more often.",
+  "type": "wordpress-plugin",
+  "license": "MIT",
+  "homepage": "https://github.com/rennerdo30/wp-cinch",
+  "authors": [
+    { "name": "Renner", "homepage": "https://renner.dev" }
+  ],
+  "require": {
+    "php": ">=8.1"
+  },
+  "autoload": {
+    "psr-4": { "Cinch\\": "src/" }
+  },
+  "scripts": {
+    "test": "php tests/MinifierTest.php",
+    "lint": "find . -path ./vendor -prune -o -name '*.php' -print -exec php -l {} ;"
+  },
+  "config": {
+    "sort-packages": true
+  }
+}
