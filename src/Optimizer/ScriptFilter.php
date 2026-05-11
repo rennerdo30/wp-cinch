@@ -8,26 +8,28 @@ use Cinch\Plugin;
 
 /**
  * Hooks `script_loader_src` and rewrites local JS URLs to a cached,
- * minified copy. Same logic as the style filter, but defaults to a
- * more conservative skip list because mangling third-party JS is the
+ * minified copy. Mirrors {@see StyleFilter} but defaults to a more
+ * conservative skip list because mangling third-party JS is the
  * fastest way to break a site.
  */
 final class ScriptFilter
 {
     private Cache $cache;
-    /** @var array{enable_css:int, enable_js:int, bypass_admin_user:int, skip_handles:string} */
+    /** @var array<string,mixed> */
     private array $settings;
     /** @var list<string> */
     private array $skip_handles;
+    private MinifierChain $chain;
 
     /**
-     * @param array{enable_css:int, enable_js:int, bypass_admin_user:int, skip_handles:string} $settings
+     * @param array<string,mixed> $settings
      */
-    public function __construct(Cache $cache, array $settings)
+    public function __construct(Cache $cache, array $settings, MinifierChain $chain)
     {
         $this->cache        = $cache;
         $this->settings     = $settings;
-        $this->skip_handles = Plugin::skip_handles($settings['skip_handles']);
+        $this->skip_handles = Plugin::parse_handles((string) ($settings['skip_handles'] ?? ''));
+        $this->chain        = $chain;
     }
 
     public function register(): void
@@ -65,7 +67,7 @@ final class ScriptFilter
         }
 
         if (!$this->cache->is_fresh($entry['path'])) {
-            $min = JsMinifier::minify($source);
+            $min = $this->chain->minify($source, 'js');
             if ($min === '' || strlen($min) > strlen($source)) {
                 return $src;
             }

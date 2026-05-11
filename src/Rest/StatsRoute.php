@@ -39,11 +39,19 @@ final class StatsRoute
 
     public function handle(WP_REST_Request $request): WP_REST_Response
     {
-        $stats = $this->cache->stats();
+        $stats   = $this->cache->stats();
+        $chain   = Plugin::minifier_chain();
+        $precomp = $this->cache->precompression_support();
         return new WP_REST_Response([
-            'cached_files' => $stats['count'],
-            'total_bytes'  => $stats['bytes'],
-            'hits_session' => (int) get_option(Plugin::HITS_OPTION, 0),
+            'cached_files'   => $stats['count'],
+            'total_bytes'    => $stats['bytes'],
+            'bundles'        => $stats['bundles'],
+            'precompressed'  => $stats['precompressed'],
+            'hits_session'   => (int) get_option(Plugin::HITS_OPTION, 0),
+            'minifier_css'   => $chain->active_strategy('css'),
+            'minifier_js'    => $chain->active_strategy('js'),
+            'brotli_support' => $precomp['br'],
+            'gzip_support'   => $precomp['gz'],
         ], 200);
     }
 }

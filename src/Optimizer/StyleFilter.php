@@ -10,30 +10,33 @@ use Cinch\Plugin;
  * Hooks `style_loader_src` and rewrites local CSS URLs to point at a
  * cached, minified copy under wp-content/uploads/<slug>/.
  *
- * Logic:
- *  - Skip when the URL is on an external host.
- *  - Skip when the file is already minified (`.min.css`).
- *  - Skip when the handle is on the user's skip list.
- *  - Skip when the source can't be resolved to a local filesystem path.
- *  - Otherwise: hash the source, look up `<hash>.css`, return its URL.
- *    Generate it on the spot if missing.
+ * The actual minification is delegated to a {@see MinifierChain} so the
+ * best available engine (esbuild → matthiasmullie → regex) runs on
+ * each source file. The filter still owns the URL → path resolution,
+ * the cache lookup, the size-regression guard, and the hit counter.
+ *
+ * When the bundler runs (priority 1 on wp_print_styles), it dequeues
+ * the original handles BEFORE WP starts emitting tags, so this filter
+ * never sees them — bundle output bypasses the rewriter entirely.
  */
 final class StyleFilter
 {
     private Cache $cache;
-    /** @var array{enable_css:int, enable_js:int, bypass_admin_user:int, skip_handles:string} */
+    /** @var array<string,mixed> */
     private array $settings;
     /** @var list<string> */
     private array $skip_handles;
+    private MinifierChain $chain;
 
     /**
-     * @param array{enable_css:int, enable_js:int, bypass_admin_user:int, skip_handles:string} $settings
+     * @param array<string,mixed> $settings
      */
-    public function __construct(Cache $cache, array $settings)
+    public function __construct(Cache $cache, array $settings, MinifierChain $chain)
     {
         $this->cache        = $cache;
         $this->settings     = $settings;
-        $this->skip_handles = Plugin::skip_handles($settings['skip_handles']);
+        $this->skip_handles = Plugin::parse_handles((string) ($settings['skip_handles'] ?? ''));
+        $this->chain        = $chain;
     }
 
     public function register(): void
@@ -52,7 +55,6 @@ final class StyleFilter
         if (preg_match('/\.min\.css(?:\?|$)/i', $src)) {
             return $src;
         }
-        // Quick extension test before we hit the disk.
         if (!preg_match('/\.css(?:\?|$)/i', $src)) {
             return $src;
         }
@@ -72,9 +74,8 @@ final class StyleFilter
         }
 
         if (!$this->cache->is_fresh($entry['path'])) {
-            $min = CssMinifier::minify($source);
-            // Defensive: never write a larger file than the source. If the
-            // minifier ever regresses, fall back to the source URL.
+            $min = $this->chain->minify($source, 'css');
+            // Defensive: never write a larger file than the source.
             if ($min === '' || strlen($min) > strlen($source)) {
                 return $src;
             }
@@ -83,7 +84,6 @@ final class StyleFilter
             }
         }
 
-        // Bump session hit counter for the admin stats panel.
         $hits = (int) get_option(Plugin::HITS_OPTION, 0);
         update_option(Plugin::HITS_OPTION, $hits + 1, false);
 

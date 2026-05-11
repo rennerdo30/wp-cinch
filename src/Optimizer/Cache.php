@@ -61,6 +61,29 @@ final class Cache
     }
 
     /**
+     * Bundle layout: <cache>/bundles/<type>/<hash>.<ext>
+     *
+     * @return array{path:string, url:string}
+     */
+    public function bundle_entry(string $type, string $hash, string $ext): array
+    {
+        $rel = 'bundles/' . $type . '/' . $hash . '.' . ltrim($ext, '.');
+        return [
+            'path' => $this->dir() . '/' . $rel,
+            'url'  => $this->url_base() . '/' . $rel,
+        ];
+    }
+
+    public function ensure_bundle_dir(string $type): bool
+    {
+        $dir = $this->dir() . '/bundles/' . $type;
+        if (is_dir($dir)) {
+            return true;
+        }
+        return wp_mkdir_p($dir);
+    }
+
+    /**
      * Hash a source path's content + key it under the requested extension.
      * Returns null when the source can't be read.
      *
@@ -94,13 +117,23 @@ final class Cache
     /**
      * Atomic-ish write: write to a temp file first, then rename. Avoids
      * concurrent readers seeing a half-written file.
+     *
+     * When $precompress is true (default) and the corresponding PHP
+     * function is available, also write `<path>.br` (quality 11) and
+     * `<path>.gz` (level 9) next to the raw file. Apache/nginx are
+     * expected to negotiate Content-Encoding from those siblings (the
+     * .htaccess snippet that {@see ensure_htaccess()} writes does
+     * exactly that on Apache).
      */
-    public function write(string $cached_path, string $content): bool
+    public function write(string $cached_path, string $content, bool $precompress = true): bool
     {
         if (!$this->ensure_dir()) {
             return false;
         }
         $dir = dirname($cached_path);
+        if (!is_dir($dir)) {
+            wp_mkdir_p($dir);
+        }
         $tmp = $dir . '/.' . basename($cached_path) . '.' . getmypid() . '.tmp';
         if (false === @file_put_contents($tmp, $content)) {
             return false;
@@ -110,12 +143,128 @@ final class Cache
             @unlink($tmp);
             return false;
         }
+        if ($precompress) {
+            $this->write_precompressed($cached_path, $content);
+            $this->ensure_htaccess();
+        }
         return true;
     }
 
     /**
-     * Sweep every file under the cache dir. Returns the number of files
-     * deleted. Safe across re-runs.
+     * Best-effort sibling writers — silent on missing extensions.
+     */
+    private function write_precompressed(string $cached_path, string $content): void
+    {
+        if (function_exists('brotli_compress')) {
+            $br = @\brotli_compress($content, 11);
+            if (is_string($br) && $br !== '') {
+                $this->atomic_write($cached_path . '.br', $br);
+            }
+        }
+        if (function_exists('gzencode')) {
+            $gz = @gzencode($content, 9);
+            if (is_string($gz) && $gz !== '') {
+                $this->atomic_write($cached_path . '.gz', $gz);
+            }
+        }
+    }
+
+    private function atomic_write(string $path, string $content): bool
+    {
+        $dir = dirname($path);
+        $tmp = $dir . '/.' . basename($path) . '.' . getmypid() . '.tmp';
+        if (false === @file_put_contents($tmp, $content)) {
+            return false;
+        }
+        @chmod($tmp, 0644);
+        if (!@rename($tmp, $path)) {
+            @unlink($tmp);
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Drop an Apache .htaccess into the cache root that serves the .br
+     * and .gz siblings when the client's Accept-Encoding asks for them.
+     * Idempotent — re-run is a no-op once the file exists.
+     */
+    public function ensure_htaccess(): bool
+    {
+        $dir = $this->dir();
+        if (!is_dir($dir)) {
+            if (!$this->ensure_dir()) {
+                return false;
+            }
+        }
+        $path = $dir . '/.htaccess';
+        if (is_file($path)) {
+            return true;
+        }
+        $body = <<<HT
+# wp-cinch — serve precompressed siblings when the client accepts them.
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  # Brotli first.
+  RewriteCond %{HTTP:Accept-Encoding} br
+  RewriteCond %{REQUEST_FILENAME}.br -f
+  RewriteRule ^(.+)\.(css|js)$ \$1.\$2.br [L]
+
+  # Gzip fallback.
+  RewriteCond %{HTTP:Accept-Encoding} gzip
+  RewriteCond %{REQUEST_FILENAME}.gz -f
+  RewriteRule ^(.+)\.(css|js)$ \$1.\$2.gz [L]
+</IfModule>
+
+<IfModule mod_headers.c>
+  <FilesMatch "\.css\.br$">
+    Header set Content-Type "text/css"
+    Header set Content-Encoding "br"
+    Header append Vary Accept-Encoding
+  </FilesMatch>
+  <FilesMatch "\.js\.br$">
+    Header set Content-Type "application/javascript"
+    Header set Content-Encoding "br"
+    Header append Vary Accept-Encoding
+  </FilesMatch>
+  <FilesMatch "\.css\.gz$">
+    Header set Content-Type "text/css"
+    Header set Content-Encoding "gzip"
+    Header append Vary Accept-Encoding
+  </FilesMatch>
+  <FilesMatch "\.js\.gz$">
+    Header set Content-Type "application/javascript"
+    Header set Content-Encoding "gzip"
+    Header append Vary Accept-Encoding
+  </FilesMatch>
+</IfModule>
+
+# Long cache lives at the edge — hashes change on every source edit.
+<IfModule mod_expires.c>
+  ExpiresActive On
+  ExpiresByType text/css "access plus 1 year"
+  ExpiresByType application/javascript "access plus 1 year"
+</IfModule>
+HT;
+        return false !== @file_put_contents($path, $body);
+    }
+
+    /**
+     * @return array{br:bool, gz:bool}
+     */
+    public function precompression_support(): array
+    {
+        return [
+            'br' => function_exists('brotli_compress'),
+            'gz' => function_exists('gzencode'),
+        ];
+    }
+
+    /**
+     * Sweep every file under the cache dir (recursively, so bundles/
+     * subdirs are covered). Preserves .htaccess so the negotiation
+     * rules survive a purge. Returns the number of files deleted.
      */
     public function purge(): int
     {
@@ -124,8 +273,21 @@ final class Cache
             return 0;
         }
         $count = 0;
-        foreach ((array) glob($dir . '/*') as $entry) {
-            if (is_file($entry) && @unlink($entry)) {
+        $iter  = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($iter as $entry) {
+            /** @var \SplFileInfo $entry */
+            $path = $entry->getPathname();
+            if ($entry->isDir()) {
+                @rmdir($path);
+                continue;
+            }
+            if ($entry->getFilename() === '.htaccess') {
+                continue;
+            }
+            if (@unlink($path)) {
                 $count++;
             }
         }
@@ -134,24 +296,48 @@ final class Cache
 
     /**
      * Snapshot of the cache for the settings page + REST endpoint.
+     * Recursive so bundles + .br + .gz siblings count.
      *
-     * @return array{count:int, bytes:int}
+     * @return array{count:int, bytes:int, bundles:int, precompressed:int}
      */
     public function stats(): array
     {
         $dir   = $this->dir();
         $count = 0;
         $bytes = 0;
+        $bundles = 0;
+        $precompressed = 0;
         if (!is_dir($dir)) {
-            return ['count' => 0, 'bytes' => 0];
+            return ['count' => 0, 'bytes' => 0, 'bundles' => 0, 'precompressed' => 0];
         }
-        foreach ((array) glob($dir . '/*') as $entry) {
-            if (is_file($entry)) {
-                $count++;
-                $bytes += (int) @filesize($entry);
+        $iter = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS)
+        );
+        foreach ($iter as $entry) {
+            /** @var \SplFileInfo $entry */
+            if (!$entry->isFile()) {
+                continue;
+            }
+            if ($entry->getFilename() === '.htaccess') {
+                continue;
+            }
+            $name = $entry->getFilename();
+            $count++;
+            $bytes += (int) $entry->getSize();
+            if (str_ends_with($name, '.br') || str_ends_with($name, '.gz')) {
+                $precompressed++;
+            }
+            $rel = substr($entry->getPathname(), strlen($dir) + 1);
+            if (str_starts_with($rel, 'bundles/')) {
+                $bundles++;
             }
         }
-        return ['count' => $count, 'bytes' => $bytes];
+        return [
+            'count' => $count,
+            'bytes' => $bytes,
+            'bundles' => $bundles,
+            'precompressed' => $precompressed,
+        ];
     }
 
     /**

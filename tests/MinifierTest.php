@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 // Lightweight harness — no PHPUnit dep; just asserts + a one-line summary.
 
+require __DIR__ . '/../src/Optimizer/RegexMinifier.php';
 require __DIR__ . '/../src/Optimizer/CssMinifier.php';
 require __DIR__ . '/../src/Optimizer/JsMinifier.php';
 

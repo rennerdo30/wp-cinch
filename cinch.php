@@ -2,8 +2,8 @@
 /**
  * Plugin Name: Cinch
  * Plugin URI: https://github.com/rennerdo30/wp-cinch
- * Description: Minifies and caches enqueued CSS + JS assets on disk so the browser pulls smaller files and the edge cache hits more often. MIT.
- * Version: 0.1.0
+ * Description: Dequeues unused assets, concatenates per-page CSS + JS, minifies through the best engine on the host (esbuild then matthiasmullie then regex), and writes brotli + gzip siblings for the edge. MIT.
+ * Version: 0.2.0
  * Author: renner.dev
  * Author URI: https://renner.dev
  * License: MIT
@@ -19,7 +19,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('CINCH_VERSION', '0.1.0');
+define('CINCH_VERSION', '0.2.0');
 define('CINCH_FILE', __FILE__);
 define('CINCH_DIR', plugin_dir_path(__FILE__));
 define('CINCH_URL', plugin_dir_url(__FILE__));
@@ -36,6 +36,14 @@ spl_autoload_register(static function (string $class): void {
         require_once $path;
     }
 });
+
+// Composer autoload — included up front so matthiasmullie is reachable
+// before plugins_loaded fires. No-op when composer install has not run.
+$cinch_vendor = __DIR__ . '/vendor/autoload.php';
+if (is_file($cinch_vendor)) {
+    require_once $cinch_vendor;
+}
+unset($cinch_vendor);
 
 add_action('plugins_loaded', static function (): void {
     (new \Cinch\Plugin())->boot();
