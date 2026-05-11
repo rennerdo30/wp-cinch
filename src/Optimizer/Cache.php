@@ -203,6 +203,23 @@ final class Cache
         }
         $body = <<<HT
 # wp-cinch — serve precompressed siblings when the client accepts them.
+#
+# The trick is convincing Apache to send `Content-Type: text/css` for a
+# file called `foo.css.gz`. By default mod_mime sees the `.gz` and sets
+# `application/x-gzip`, which browsers refuse to apply as CSS — the page
+# would render unstyled. RemoveType strips that default, then explicit
+# AddType / AddEncoding declares the right pair for each combo.
+<IfModule mod_mime.c>
+  RemoveType .gz
+  RemoveType .br
+  AddType text/css                .css.gz
+  AddType application/javascript  .js.gz
+  AddType text/css                .css.br
+  AddType application/javascript  .js.br
+  AddEncoding gzip .gz
+  AddEncoding br   .br
+</IfModule>
+
 <IfModule mod_rewrite.c>
   RewriteEngine On
 
@@ -218,24 +235,8 @@ final class Cache
 </IfModule>
 
 <IfModule mod_headers.c>
-  <FilesMatch "\.css\.br$">
-    Header set Content-Type "text/css"
-    Header set Content-Encoding "br"
-    Header append Vary Accept-Encoding
-  </FilesMatch>
-  <FilesMatch "\.js\.br$">
-    Header set Content-Type "application/javascript"
-    Header set Content-Encoding "br"
-    Header append Vary Accept-Encoding
-  </FilesMatch>
-  <FilesMatch "\.css\.gz$">
-    Header set Content-Type "text/css"
-    Header set Content-Encoding "gzip"
-    Header append Vary Accept-Encoding
-  </FilesMatch>
-  <FilesMatch "\.js\.gz$">
-    Header set Content-Type "application/javascript"
-    Header set Content-Encoding "gzip"
+  # Vary lets caches store per-encoding variants of the SAME URL.
+  <FilesMatch "\.(css|js)$">
     Header append Vary Accept-Encoding
   </FilesMatch>
 </IfModule>
