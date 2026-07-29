@@ -74,6 +74,18 @@ When `function_exists('brotli_compress')` (PHP ext-brotli, usually a separate in
 
 Cinch → admin menu (option key `cinch_settings`). Every visible toggle is listed there with inline help; this readme covers the wiring.
 
+## Tests
+
+The suites are plain PHP scripts — no PHPUnit, no WordPress bootstrap needed:
+
+```bash
+composer test    # php tests/MinifierTest.php && php tests/ChainTest.php
+composer lint    # php -l over every file outside vendor/
+```
+
+`MinifierTest` exercises each minifier strategy directly; `ChainTest` covers the
+fall-through behaviour (unavailable engine, thrown exception, empty input fast path).
+
 ## REST API
 
 `GET /wp-json/cinch/v1/stats` (requires `manage_options`):
@@ -136,7 +148,7 @@ front-end request
 
 ## v0.2 deferred → v0.3
 
-- **Per-page CSS tree-shaking** — render the page in a headless browser, capture used selectors, emit a per-route CSS slice. Big lift (requires Chromium-class runtime), big win (the 11 KiB ~66% unused theme CSS on EUPD would drop to ~4 KiB).
+- **Per-page CSS tree-shaking** — render the page in a headless browser, capture used selectors, emit a per-route CSS slice. Big lift (requires Chromium-class runtime), big win — a typical classic theme ships around 11 KiB of CSS of which roughly two thirds goes unused on any given route.
 - **HTTP/3 server push hints** — `Link: rel=preload` in headers for the synthetic bundle URLs. Worth measuring but only marginal once concat is on.
 - **JS module bundling** — `<script type="module">` chains aren't bucketed yet. Most v0.2 sites don't use them; revisit when usage grows.
 - **Source maps for bundles** — currently bare. The chain knows enough to emit them when esbuild is the active engine; gated behind a setting because they leak source paths.
